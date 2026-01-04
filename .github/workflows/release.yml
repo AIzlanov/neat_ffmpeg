@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*' # Срабатывает при пуше тега, например v1.3.0
 
+permissions:
+  contents: write  # Это дает право создавать релизы и загружать файлы
+
 jobs:
   build:
     runs-on: windows-latest
