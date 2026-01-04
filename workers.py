@@ -214,12 +214,23 @@ def convert_worker(files, settings, queue, cancel_event):
 
 # === ЗАГРУЗКА (YOUTUBE) ===
 def download_worker(url, folder, queue, cancel_event):
-    # Определяем путь к ffmpeg для yt-dlp
+    # 1. ОПРЕДЕЛЯЕМ ПУТЬ К FFMPEG
     if getattr(sys, 'frozen', False):
         base_path = Path(sys.executable).parent
     else:
         base_path = Path(__file__).parent
-    ffmpeg_bin_path = str((base_path / "ffmpeg" / "bin").absolute())
+    
+    # путь как папке bin внутри ffmpeg
+    ffmpeg_bin_path = (base_path / "ffmpeg" / "bin").absolute()
+    ffmpeg_bin_str = str(ffmpeg_bin_path)
+
+    # ПРИНУДИТЕЛЬНО прописываем путь в PATH для этого потока
+    os.environ["PATH"] = ffmpeg_bin_str + os.pathsep + os.environ["PATH"]
+
+    # Проверка для отладки в консоли
+    ffmpeg_exe_check = ffmpeg_bin_path / "ffmpeg.exe"
+    print(f"[DEBUG] Путь к FFmpeg: {ffmpeg_exe_check}")
+    print(f"[DEBUG] Файл найден: {ffmpeg_exe_check.exists()}")
     
     # 1. ЛОГГЕР (теперь не совсем тихий, чтобы вы видели ошибки)
     class MyLogger:
