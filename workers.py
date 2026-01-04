@@ -208,33 +208,29 @@ def convert_worker(files, settings, queue, cancel_event):
 
 # === ЗАГРУЗКА (YOUTUBE) ===
 def download_worker(url, folder, queue, cancel_event):
-    # ОПРЕДЕЛЯЕМ ПУТЬ
+    # 1. ОПРЕДЕЛЯЕМ ПУТЬ СТРОГО К ФАЙЛУ
     if getattr(sys, 'frozen', False):
         base_path = Path(sys.executable).parent
     else:
         base_path = Path(__file__).parent
 
-    ffmpeg_dir = base_path / "ffmpeg" / "bin"
-    ffmpeg_exe_path = ffmpeg_dir / "ffmpeg.exe"
-    ffmpeg_bin_str = str(ffmpeg_dir)
+    # Важно: указываем путь именно к ffmpeg.exe, а не просто к папке
+    ffmpeg_exe_path = base_path / "ffmpeg" / "bin" / "ffmpeg.exe"
+    ffmpeg_exe_str = str(ffmpeg_exe_path.absolute())
 
-    # Отладочная информация в консоль
-    print(f"--- DEBUG INFO ---")
-    print(f"Base path: {base_path}")
-    print(f"FFmpeg dir: {ffmpeg_bin_str}")
-    print(f"FFmpeg exe exists: {ffmpeg_exe_path.exists()}")
-    print(f"------------------")
-    
+    # Отладка в консоль (проверь это при запуске exe)
+    print(f"--- YT-DLP DEBUG ---")
+    print(f"Looking for ffmpeg at: {ffmpeg_exe_str}")
+    print(f"Exists: {ffmpeg_exe_path.exists()}")
+    print(f"--------------------")
+
     class MyLogger:
         def debug(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
         def info(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
-            print(f"[INFO] {msg}")
-        def warning(self, msg): 
-            print(f"[WARNING] {msg}")
-        def error(self, msg): 
-            print(f"[ERROR] {msg}")
+        def warning(self, msg): print(f"[WARNING] {msg}")
+        def error(self, msg): print(f"[ERROR] {msg}")
 
     def clean_ansi(text):
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -243,29 +239,22 @@ def download_worker(url, folder, queue, cancel_event):
     current_files = set()
 
     def progress_hook(d):
-        if cancel_event.is_set():
-            raise Exception("CANCELED_BY_USER")
-        
-        if 'filename' in d:
-            current_files.add(d['filename'])
-
+        if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
+        if 'filename' in d: current_files.add(d['filename'])
         if d['status'] == 'downloading':
-            p_str = d.get('_percent_str', '0%')
-            s_str = d.get('_speed_str', '0KiB/s')
-            p_clean = clean_ansi(p_str).strip()
-            s_clean = clean_ansi(s_str).strip()
-            
+            p_clean = clean_ansi(d.get('_percent_str', '0%')).strip()
+            s_clean = clean_ansi(d.get('_speed_str', '0KiB/s')).strip()
             p_match = re.search(r'(\d+\.?\d*)%', p_clean)
             pct_value = p_match.group(1) if p_match else "0"
-            
             queue.put(("dl", "status", f"Загрузка: {pct_value}% | {s_clean}"))
-            try:
-                queue.put(("dl", "progress", int(float(pct_value))))
+            try: queue.put(("dl", "progress", int(float(pct_value))))
             except: pass
 
+    # НАСТРОЙКИ (ydl_opts)
     ydl_opts = {
-        'ffmpeg_location': ffmpeg_bin_str, 
-        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
+        'ffmpeg_location': ffmpeg_exe_str, # ТЕПЕРЬ ПЕРЕДАЕМ ПУТЬ К EXE
+        # Упростили формат, чтобы не было ошибки "Requested format is not available"
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
         'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'), 
         'merge_output_format': 'mp4', 
         'progress_hooks': [progress_hook], 
@@ -273,10 +262,7 @@ def download_worker(url, folder, queue, cancel_event):
         'nooverwrites': True,
         'continuedl': True,
         'nocheckcertificate': True,
-        'geo_bypass': True,
-        'restrictfilenames': True,
         'quiet': False,
-        'no_warnings': True,
     }
 
     try:
@@ -284,23 +270,17 @@ def download_worker(url, folder, queue, cancel_event):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
             ydl.download([url])
-            
         queue.put(("dl", "done", None))
-
     except Exception as e:
         if "CANCELED_BY_USER" in str(e):
-            print("\n[SYSTEM] Процесс прерван пользователем. Очистка...")
             queue.put(("dl", "status", "Загрузка отменена"))
             time.sleep(0.7)
             for f in current_files:
-                for ext in ['', '.part', '.ytdl', '.temp', '.f137', '.f251', '.f136']:
-                    path_to_del = f + ext if ext != '' else f
-                    if os.path.exists(path_to_del):
-                        try:
-                            os.remove(path_to_del)
+                for ext in ['', '.part', '.ytdl', '.temp']:
+                    p = f + ext if ext != '' else f
+                    if os.path.exists(p):
+                        try: os.remove(p)
                         except: pass
-            queue.put(("dl", "error", "Загрузка была остановлена пользователем"))
+            queue.put(("dl", "error", "Загрузка остановлена"))
         else:
             queue.put(("dl", "error", f"Ошибка: {str(e)}"))
-
-    print("\n")
