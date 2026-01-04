@@ -1,4 +1,4 @@
 tkinterdnd2==0.4.3
-yt_dlp==2025.12.8
+yt_dlp
 Pillow
 pyinstaller

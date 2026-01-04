@@ -2,6 +2,8 @@ import os
 import time
 import subprocess
 import re
+import sys 
+from pathlib import Path  
 import yt_dlp
 from utils import hms_to_seconds, seconds_to_hms, parse_ffmpeg_time, run_ffprobe, STARTUPINFO
 
@@ -11,6 +13,13 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
     start_sec = hms_to_seconds(start_str)
     end_sec = hms_to_seconds(end_str)
     dur = end_sec - start_sec
+
+    # Находим путь к ffmpeg для портативной версии
+    if getattr(sys, 'frozen', False):
+        base_path = Path(sys.executable).parent
+    else:
+        base_path = Path(__file__).parent
+    ffmpeg_exe = str((base_path / "ffmpeg" / "bin" / "ffmpeg.exe").absolute())
 
     if dur <= 0:
         queue.put(("cut", "error", "Конечное время должно быть больше начального"))
@@ -29,7 +38,7 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
         outname = os.path.join(folder, f"{name}{suffix}{ext}")
 
         cmd = [
-            "ffmpeg", "-hide_banner", "-y",
+            ffmpeg_exe, "-hide_banner", "-y",
             "-ss", start_str,
             "-i", path,
             "-t", seconds_to_hms(dur),
@@ -72,6 +81,15 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
 def convert_worker(files, settings, queue, cancel_event):
     total = len(files)
     
+    # Определяем базовый путь для FFmpeg
+    if getattr(sys, 'frozen', False):
+        base_path = Path(sys.executable).parent
+    else:
+        base_path = Path(__file__).parent
+    
+    # Прямой путь к исполняемому файлу ffmpeg
+    ffmpeg_exe = str((base_path / "ffmpeg" / "bin" / "ffmpeg.exe").absolute())
+
     crf = settings.get('crf')
     preset = settings.get('preset')
     res_mode = settings.get('resolution') 
@@ -127,7 +145,8 @@ def convert_worker(files, settings, queue, cancel_event):
 
         is_vertical = height > width
 
-        cmd = ["ffmpeg", "-hide_banner", "-y", "-i", path,  
+        # Используем полный путь к ffmpeg_exe для стабильности в портативной версии
+        cmd = [ffmpeg_exe, "-hide_banner", "-y", "-i", path,  
                 "-c:v", "libx264", "-movflags", "+faststart", 
                 "-profile:v", "high", "-pix_fmt", "yuv420p", 
                 "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
@@ -137,15 +156,22 @@ def convert_worker(files, settings, queue, cancel_event):
 
         scale_filter = None
         if res_mode == "custom":
-            if res_custom: scale_filter = res_custom
+            if res_custom: 
+                # Добавляем фильтр, который принудительно делает стороны четными (нужно для h264)
+                scale_filter = f"scale={res_custom}:force_original_aspect_ratio=decrease,pad='ceil(iw/2)*2:ceil(ih/2)*2'"
         elif res_mode and res_mode != "copy":
             if ":-1" in res_mode:
                 target_size = res_mode.split(":")[0]  
-                scale_filter = f"-1:{target_size}" if is_vertical else f"{target_size}:-1"
+                # Математика для автоматического расчета второй стороны с округлением до четного числа
+                if is_vertical:
+                    scale_filter = f"scale='trunc(oh*a/2)*2:{target_size}'"
+                else:
+                    scale_filter = f"scale='{target_size}:trunc(ow/a/2)*2'"
             else:
-                scale_filter = res_mode
+                # Для фиксированных разрешений (например 1280x720) добавляем защиту от нечетности
+                scale_filter = f"scale={res_mode}:force_original_aspect_ratio=decrease,pad='ceil(iw/2)*2:ceil(ih/2)*2'"
         
-        if scale_filter: cmd += ["-vf", f"scale={scale_filter}"]
+        if scale_filter: cmd += ["-vf", scale_filter]
         if fps and fps != "copy": cmd += ["-r", fps]
 
         if acodec != "copy":
@@ -177,7 +203,10 @@ def convert_worker(files, settings, queue, cancel_event):
                     queue.put(("conv", "progress", max(0, min(100, pct))))
             queue.put(("conv", "progress", 100))
         except Exception as e:
-            queue.put(("conv", "error", f"Start fail: {e}"))
+            # Теперь мы выводим детальную ошибку, чтобы понять, почему файл не обработался
+            error_msg = f"Ошибка FFmpeg на файле {name}: {str(e)}"
+            queue.put(("conv", "error", error_msg))
+            print(f"!!! Ошибка конвертации !!!\nКоманда: {' '.join(cmd)}\nОшибка: {e}")
             continue
 
     queue.put(("conv", "done", None))
@@ -185,11 +214,17 @@ def convert_worker(files, settings, queue, cancel_event):
 
 # === ЗАГРУЗКА (YOUTUBE) ===
 def download_worker(url, folder, queue, cancel_event):
+    # Определяем путь к ffmpeg для yt-dlp
+    if getattr(sys, 'frozen', False):
+        base_path = Path(sys.executable).parent
+    else:
+        base_path = Path(__file__).parent
+    ffmpeg_bin_path = str((base_path / "ffmpeg" / "bin").absolute())
+    
     # 1. ЛОГГЕР (теперь не совсем тихий, чтобы вы видели ошибки)
     class MyLogger:
         def debug(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
-            # print(f"[DEBUG] {msg}") # Раскомментируйте, если нужно видеть всё
         def info(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
             print(f"[INFO] {msg}")
@@ -227,8 +262,9 @@ def download_worker(url, folder, queue, cancel_event):
 
     # 4. НАСТРОЙКИ (ydl_opts)
     ydl_opts = {
-        # Формат: mp4, до 1080p
-        'format': 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo+bestaudio/best[height<=1080]', 
+        'ffmpeg_location': ffmpeg_bin_path, # Передаем путь к кодекам напрямую
+        # Формат: mp4, до 1080p, приоритет на совместимые кодеки
+        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
         'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'), 
         'merge_output_format': 'mp4', 
         
