@@ -214,23 +214,25 @@ def convert_worker(files, settings, queue, cancel_event):
 
 # === ЗАГРУЗКА (YOUTUBE) ===
 def download_worker(url, folder, queue, cancel_event):
-    # 1. ОПРЕДЕЛЯЕМ ПУТЬ К FFMPEG
+    # 1. ОПРЕДЕЛЯЕМ ПУТЬ МАКСИМАЛЬНО ПРОСТО
     if getattr(sys, 'frozen', False):
         base_path = Path(sys.executable).parent
     else:
         base_path = Path(__file__).parent
+
+    # Попробуем использовать относительный путь, он часто надежнее для внешних утилит
+    ffmpeg_dir = base_path / "ffmpeg" / "bin"
+    ffmpeg_exe = ffmpeg_dir / "ffmpeg.exe"
     
-    # путь как папке bin внутри ffmpeg
-    ffmpeg_bin_path = (base_path / "ffmpeg" / "bin").absolute()
-    ffmpeg_bin_str = str(ffmpeg_bin_path)
+    # Преобразуем в строку только для yt-dlp
+    ffmpeg_bin_str = str(ffmpeg_dir)
 
-    # ПРИНУДИТЕЛЬНО прописываем путь в PATH для этого потока
-    os.environ["PATH"] = ffmpeg_bin_str + os.pathsep + os.environ["PATH"]
-
-    # Проверка для отладки в консоли
-    ffmpeg_exe_check = ffmpeg_bin_path / "ffmpeg.exe"
-    print(f"[DEBUG] Путь к FFmpeg: {ffmpeg_exe_check}")
-    print(f"[DEBUG] Файл найден: {ffmpeg_exe_check.exists()}")
+    # Выводим в консоль для проверки (если запустить exe через cmd, увидишь это)
+    print(f"--- DEBUG INFO ---")
+    print(f"Base path: {base_path}")
+    print(f"FFmpeg dir: {ffmpeg_bin_str}")
+    print(f"FFmpeg exe exists: {ffmpeg_exe.exists()}")
+    print(f"------------------")
     
     # 1. ЛОГГЕР (теперь не совсем тихий, чтобы вы видели ошибки)
     class MyLogger:
