@@ -11,9 +11,13 @@ __pycache__/
 # Батник для запуска гита из папки
 git start.bat
 
-# Игнорировать все CSV-файлы внутри папки
-versions/*
+# Игнорировать папки 
+versions/
+ffmpeg/
 
 # Конфигурации IDE
 .vscode/
 .idea/
+
+# exe файлы
+*.exe
