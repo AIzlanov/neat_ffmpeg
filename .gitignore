@@ -1,0 +1,19 @@
+# Виртуальное окружение
+venv/
+__pycache__/
+
+# Временные файлы Jupyter
+.ipynb_checkpoints/
+
+# Системные файлы
+.DS_Store
+
+# Батник для запуска гита из папки
+git start.bat
+
+# Игнорировать все CSV-файлы внутри папки
+versions/*
+
+# Конфигурации IDE
+.vscode/
+.idea/
