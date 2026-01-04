@@ -19,8 +19,6 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
         base_path = Path(sys.executable).parent
     else:
         base_path = Path(__file__).parent
-    
-    # Прямой путь к экзешнику для функции обрезки
     ffmpeg_exe = str((base_path / "ffmpeg" / "bin" / "ffmpeg.exe").absolute())
 
     if dur <= 0:
@@ -28,6 +26,7 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
         return
 
     for idx, path in enumerate(files, start=1):
+        # Проверка отмены ПЕРЕД запуском файла
         if cancel_event.is_set():
             queue.put(("cut", "status", "Операция отменена"))
             return
@@ -52,6 +51,7 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
             proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True, startupinfo=STARTUPINFO)
 
             while True:
+                # Проверка отмены ВО ВРЕМЯ работы процесса
                 if cancel_event.is_set():
                     proc.terminate()
                     queue.put(("cut", "status", "Обрезка прервана"))
@@ -81,6 +81,7 @@ def cut_worker(files, start_str, end_str, suffix, queue, cancel_event):
 def convert_worker(files, settings, queue, cancel_event):
     total = len(files)
     
+    # Определяем базовый путь для FFmpeg
     if getattr(sys, 'frozen', False):
         base_path = Path(sys.executable).parent
     else:
@@ -100,6 +101,7 @@ def convert_worker(files, settings, queue, cancel_event):
     out_fmt = settings.get('out_format')
 
     for idx, path in enumerate(files, start=1):
+        # Проверка отмены ПЕРЕД запуском файла
         if cancel_event.is_set():
             queue.put(("conv", "status", "Операция отменена"))
             return
@@ -143,6 +145,7 @@ def convert_worker(files, settings, queue, cancel_event):
 
         is_vertical = height > width
 
+        # Используем полный путь к ffmpeg_exe для стабильности в портативной версии
         cmd = [ffmpeg_exe, "-hide_banner", "-y", "-i", path,  
                 "-c:v", "libx264", "-movflags", "+faststart", 
                 "-profile:v", "high", "-pix_fmt", "yuv420p", 
@@ -154,17 +157,18 @@ def convert_worker(files, settings, queue, cancel_event):
         scale_filter = None
         if res_mode == "custom":
             if res_custom: 
-                # Исправлено: принудительно делаем стороны четными для h264
+                # Добавляем фильтр, который принудительно делает стороны четными (нужно для h264)
                 scale_filter = f"scale={res_custom}:force_original_aspect_ratio=decrease,pad='ceil(iw/2)*2:ceil(ih/2)*2'"
         elif res_mode and res_mode != "copy":
             if ":-1" in res_mode:
                 target_size = res_mode.split(":")[0]  
-                # Исправлено: математика с округлением до четного числа для вертикальных/горизонтальных видео
+                # Математика для автоматического расчета второй стороны с округлением до четного числа
                 if is_vertical:
                     scale_filter = f"scale='trunc(oh*a/2)*2:{target_size}'"
                 else:
                     scale_filter = f"scale='{target_size}:trunc(ow/a/2)*2'"
             else:
+                # Для фиксированных разрешений (например 1280x720) добавляем защиту от нечетности
                 scale_filter = f"scale={res_mode}:force_original_aspect_ratio=decrease,pad='ceil(iw/2)*2:ceil(ih/2)*2'"
         
         if scale_filter: cmd += ["-vf", scale_filter]
@@ -181,6 +185,7 @@ def convert_worker(files, settings, queue, cancel_event):
         try:
             proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True, bufsize=1, startupinfo=STARTUPINFO)
             while True:
+                # Проверка отмены ВО ВРЕМЯ процесса
                 if cancel_event.is_set():
                     proc.terminate()
                     queue.put(("conv", "status", "Конвертация прервана"))
@@ -198,6 +203,7 @@ def convert_worker(files, settings, queue, cancel_event):
                     queue.put(("conv", "progress", max(0, min(100, pct))))
             queue.put(("conv", "progress", 100))
         except Exception as e:
+            # Теперь мы выводим детальную ошибку, чтобы понять, почему файл не обработался
             error_msg = f"Ошибка FFmpeg на файле {name}: {str(e)}"
             queue.put(("conv", "error", error_msg))
             print(f"!!! Ошибка конвертации !!!\nКоманда: {' '.join(cmd)}\nОшибка: {e}")
@@ -208,29 +214,24 @@ def convert_worker(files, settings, queue, cancel_event):
 
 # === ЗАГРУЗКА (YOUTUBE) ===
 def download_worker(url, folder, queue, cancel_event):
-    # 1. ОПРЕДЕЛЯЕМ ПУТЬ СТРОГО К ФАЙЛУ
+    # Определяем путь к ffmpeg для yt-dlp
     if getattr(sys, 'frozen', False):
         base_path = Path(sys.executable).parent
     else:
         base_path = Path(__file__).parent
-
-    # Важно: указываем путь именно к ffmpeg.exe, а не просто к папке
-    ffmpeg_exe_path = base_path / "ffmpeg" / "bin" / "ffmpeg.exe"
-    ffmpeg_exe_str = str(ffmpeg_exe_path.absolute())
-
-    # Отладка в консоль (проверь это при запуске exe)
-    print(f"--- YT-DLP DEBUG ---")
-    print(f"Looking for ffmpeg at: {ffmpeg_exe_str}")
-    print(f"Exists: {ffmpeg_exe_path.exists()}")
-    print(f"--------------------")
-
+    ffmpeg_bin_path = str((base_path / "ffmpeg" / "bin").absolute())
+    
+    # 1. ЛОГГЕР (теперь не совсем тихий, чтобы вы видели ошибки)
     class MyLogger:
         def debug(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
         def info(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
-        def warning(self, msg): print(f"[WARNING] {msg}")
-        def error(self, msg): print(f"[ERROR] {msg}")
+            print(f"[INFO] {msg}")
+        def warning(self, msg): 
+            print(f"[WARNING] {msg}")
+        def error(self, msg): 
+            print(f"[ERROR] {msg}")
 
     def clean_ansi(text):
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -239,48 +240,78 @@ def download_worker(url, folder, queue, cancel_event):
     current_files = set()
 
     def progress_hook(d):
-        if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
-        if 'filename' in d: current_files.add(d['filename'])
+        if cancel_event.is_set():
+            raise Exception("CANCELED_BY_USER")
+        
+        if 'filename' in d:
+            current_files.add(d['filename'])
+
         if d['status'] == 'downloading':
-            p_clean = clean_ansi(d.get('_percent_str', '0%')).strip()
-            s_clean = clean_ansi(d.get('_speed_str', '0KiB/s')).strip()
+            p_str = d.get('_percent_str', '0%')
+            s_str = d.get('_speed_str', '0KiB/s')
+            p_clean = clean_ansi(p_str).strip()
+            s_clean = clean_ansi(s_str).strip()
+            
             p_match = re.search(r'(\d+\.?\d*)%', p_clean)
             pct_value = p_match.group(1) if p_match else "0"
+            
             queue.put(("dl", "status", f"Загрузка: {pct_value}% | {s_clean}"))
-            try: queue.put(("dl", "progress", int(float(pct_value))))
+            try:
+                queue.put(("dl", "progress", int(float(pct_value))))
             except: pass
 
-    # НАСТРОЙКИ (ydl_opts)
+    # 4. НАСТРОЙКИ (ydl_opts)
     ydl_opts = {
-        'ffmpeg_location': ffmpeg_exe_str, # ТЕПЕРЬ ПЕРЕДАЕМ ПУТЬ К EXE
-        # Упростили формат, чтобы не было ошибки "Requested format is not available"
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
+        'ffmpeg_location': ffmpeg_bin_path, # Передаем путь к кодекам напрямую
+        # Формат: mp4, до 1080p, приоритет на совместимые кодеки
+        'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
         'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'), 
         'merge_output_format': 'mp4', 
+        
+        # СВЯЗКА ХУКОВ И ЛОГГЕРА
         'progress_hooks': [progress_hook], 
         'logger': MyLogger(), 
-        'nooverwrites': True,
-        'continuedl': True,
-        'nocheckcertificate': True,
-        'quiet': False,
+        
+        'nooverwrites': True, # Не перезаписывать существующие файлы
+        'continuedl': True, # Продолжать докачку
+        'nocheckcertificate': True, # Игнорировать ошибки сертификатов
+        'geo_bypass': True, # Обход гео-блокировок
+        'restrictfilenames': True, # Ограниченные имена файлов
+        'quiet': False, # True - Отключить весь вывод в консоль
+        'no_warnings': True, # Отключить предупреждения
     }
 
+    # 5. ЗАПУСК
     try:
         queue.put(("dl", "status", "Анализ ссылки..."))
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             if cancel_event.is_set(): raise Exception("CANCELED_BY_USER")
             ydl.download([url])
+            
         queue.put(("dl", "done", None))
+
     except Exception as e:
         if "CANCELED_BY_USER" in str(e):
+            print("\n[SYSTEM] Процесс прерван пользователем. Очистка...")
             queue.put(("dl", "status", "Загрузка отменена"))
-            time.sleep(0.7)
+            
+            time.sleep(0.7) # Даем системе чуть больше времени закрыть файлы
+            
             for f in current_files:
-                for ext in ['', '.part', '.ytdl', '.temp']:
-                    p = f + ext if ext != '' else f
-                    if os.path.exists(p):
-                        try: os.remove(p)
-                        except: pass
-            queue.put(("dl", "error", "Загрузка остановлена"))
+                for ext in ['', '.part', '.ytdl', '.temp', '.f137', '.f251', '.f136']:
+                    path_to_del = f + ext if ext != '' else f
+                    if os.path.exists(path_to_del):
+                        try:
+                            os.remove(path_to_del)
+                            print(f"[CLEANUP] Удален мусор: {path_to_del}")
+                        except Exception as err:
+                            print(f"[CLEANUP] Не удалось удалить {path_to_del}: {err}")
+            
+            # ВАЖНО: Отправляем сигнал 'error', чтобы UI разблокировал кнопки
+            queue.put(("dl", "error", "Загрузка была остановлена пользователем"))
+            
         else:
             queue.put(("dl", "error", f"Ошибка: {str(e)}"))
+
+    # На всякий случай печатаем пустую строку, чтобы "вернуть" консоль
+    print("\n")
