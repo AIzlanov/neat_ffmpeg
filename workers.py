@@ -126,44 +126,44 @@ def download_worker(url, folder, queue, cancel_event):
     else:
         base_path = Path(__file__).parent
 
-    # Пути
+    # Путь именно к папке bin, где лежат exe файлы
     ffmpeg_bin_dir = (base_path / "ffmpeg" / "bin").absolute()
-    ffmpeg_exe = (ffmpeg_bin_dir / "ffmpeg.exe").absolute()
     
-    # 1. Принудительно добавляем путь в PATH текущего процесса
-    os.environ["PATH"] = str(ffmpeg_bin_dir) + os.pathsep + os.environ.get("PATH", "")
+    # 1. Принудительно добавляем путь в окружение процесса
+    env = os.environ.copy()
+    env["PATH"] = f"{ffmpeg_bin_dir}{os.pathsep}{env.get('PATH', '')}"
 
     class MyLogger:
         def debug(self, msg): 
             if cancel_event.is_set(): raise Exception("CANCELED")
-        def info(self, msg): print(f"[INFO] {msg}")
-        def warning(self, msg): print(f"[WARN] {msg}")
-        def error(self, msg): print(f"[ERR] {msg}")
+        def info(self, msg): pass
+        def warning(self, msg): print(f"WARN: {msg}")
+        def error(self, msg): print(f"ERR: {msg}")
 
     def progress_hook(d):
         if cancel_event.is_set(): raise Exception("CANCELED")
         if d['status'] == 'downloading':
-            p = d.get('_percent_str', '0%').replace('%','')
+            p = d.get('_percent_str', '0%').replace('%','').strip()
             try:
-                queue.put(("dl", "progress", int(float(p))))
-                queue.put(("dl", "status", f"Загрузка: {p}% | {d.get('_speed_str','?') }"))
+                val = int(float(p))
+                queue.put(("dl", "progress", val))
+                queue.put(("dl", "status", f"Загрузка: {val}%"))
             except: pass
 
     ydl_opts = {
-        # Передаем ПРЯМОЙ путь к файлу ffmpeg.exe, а не к папке
-        'ffmpeg_location': str(ffmpeg_exe),
-        # Смягчаем формат: ищем лучший mp4, если нет - любой лучший слиянием
+        # ВАЖНО: Тут должен быть путь к ПАПКЕ, где лежит ffmpeg.exe
+        'ffmpeg_location': str(ffmpeg_bin_dir),
+        # Формат: просим лучшее видео и аудио
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'),
         'merge_output_format': 'mp4',
         'progress_hooks': [progress_hook],
         'logger': MyLogger(),
         'nocheckcertificate': True,
-        'quiet': False
     }
 
     try:
-        queue.put(("dl", "status", "Запуск..."))
+        queue.put(("dl", "status", "Анализ видео..."))
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         queue.put(("dl", "done", None))
