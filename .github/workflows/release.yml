@@ -32,7 +32,8 @@ jobs:
       run: |
         # Собираем в один файл, без консоли. 
         # Если у вас появится файл icon.ico, добавьте в строку ниже: --icon="icon.ico"
-        pyinstaller --noconfirm --onefile --windowed --add-data "ui;ui" --add-data "utils.py;." --add-data "workers.py;." --name "neat_ffmpeg" main.py
+        # Добавлен флаг --uac-admin для автоматического запроса прав администратора
+        pyinstaller --noconfirm --onefile --windowed --uac-admin --add-data "ui;ui" --name "Neat FFmpeg" main.py
 
     - name: Prepare Assets (Download FFmpeg and Deno)
       shell: pwsh
